@@ -18,7 +18,7 @@ on:
         default: ""
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: mac-dev-build
@@ -169,6 +169,46 @@ jobs:
           TXT
           cat 安装说明.txt
 
+      - name: 挂到 dev-latest 预发布（可直接下载，不是正式版本）
+        id: rel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+          DMG: ${{ steps.dmg.outputs.file }}
+          APP: ${{ steps.dmg.outputs.app }}
+          SRC_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          gh release delete dev-latest --yes --cleanup-tag 2>/dev/null || true
+          sleep 2
+          cat > /tmp/notes.md <<MD
+          **自动构建的 macOS 测试包，不是正式版本。**
+
+          - 版本：\`${VERSION}\`
+          - 构建：#${GITHUB_RUN_NUMBER}（[run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})）
+          - 源码 ref：\`${SRC_REF:-main}\`
+          - 架构：Apple Silicon（arm64）——Intel Mac 不能安装
+          - 系统：macOS 11.0 及以上
+
+          ## 安装
+
+          1. 下载下面的 \`.dmg\`，双击，把「${APP}」拖进「应用程序」
+          2. 未签名包必须做一次，否则报「已损坏，无法打开」：
+
+             \`\`\`bash
+             sudo xattr -rd com.apple.quarantine "/Applications/${APP}"
+             \`\`\`
+
+          3. 双击打开
+
+          校验值见 \`SHA256SUMS.txt\`。
+          MD
+          gh release create dev-latest --prerelease \
+            --title "测试版 ${VERSION} · 构建 #${GITHUB_RUN_NUMBER}" \
+            --notes-file /tmp/notes.md \
+            "$DMG" SHA256SUMS.txt 安装说明.txt
+          echo "url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/dev-latest" >> "$GITHUB_OUTPUT"
+
       - uses: actions/upload-artifact@v4
         with:
           name: nous-mac-${{ steps.v.outputs.version }}-run${{ github.run_number }}
@@ -189,6 +229,8 @@ jobs:
             echo "- 源码 ref：\`${{ inputs.ref }}\`"
             echo "- 产物：\`${{ steps.dmg.outputs.file }}\`"
             echo "- Artifact：\`nous-mac-${{ steps.v.outputs.version }}-run${{ github.run_number }}\`（保留 14 天）"
+            echo "- 直接下载：${{ steps.rel.outputs.url }}"
+            echo "- 资源直链：https://github.com/nous-reading/nous/releases/download/dev-latest/${{ steps.dmg.outputs.file }}"
             echo "- 备注：${{ inputs.note }}"
             echo ""
             echo "> 未签名，安装后需执行一次 \`sudo xattr -rd com.apple.quarantine\`。"
