@@ -1,7 +1,7 @@
 # Mac 快速验证构建（公开仓库，不发布版本，只出 Artifact）
 #
 # 用法：私有仓库提交后，到 Actions → mac-dev-build → Run workflow（ref 默认 main）。
-# 产物：Artifact 里的 Nous-<版本>-aarch64-test.<run>.dmg + SHA256SUMS.txt + 安装说明.txt
+# 产物：Artifact 里的 Nous-<版本>-aarch64-test.<run>.dmg + SHA256SUMS.txt + INSTALL.txt
 # 只读一次私有仓库的 tarball，token 不落盘；不建 tag、不建 Release。
 name: mac-dev-build
 
@@ -147,7 +147,7 @@ jobs:
 
       - name: 写安装说明
         run: |
-          cat > 安装说明.txt <<TXT
+          cat > INSTALL.txt <<TXT
           如是 Nous · 测试包（未签名，仅供内测）
 
           版本：${{ steps.v.outputs.version }}
@@ -167,7 +167,7 @@ jobs:
           SHA256：
           $(cat SHA256SUMS.txt)
           TXT
-          cat 安装说明.txt
+          cat INSTALL.txt
 
       - name: 挂到 dev-latest 预发布（可直接下载，不是正式版本）
         id: rel
@@ -207,7 +207,7 @@ jobs:
           gh release create dev-latest --prerelease \
             --title "测试版 ${VERSION} · 构建 #${GITHUB_RUN_NUMBER}" \
             --notes-file /tmp/notes.md \
-            "$DMG" SHA256SUMS.txt 安装说明.txt
+            "$DMG" SHA256SUMS.txt INSTALL.txt
           echo "url=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/dev-latest" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@v4
@@ -216,7 +216,7 @@ jobs:
           path: |
             ${{ steps.dmg.outputs.file }}
             SHA256SUMS.txt
-            安装说明.txt
+            INSTALL.txt
           if-no-files-found: error
           retention-days: 14
 
