@@ -173,6 +173,7 @@ jobs:
         id: rel
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           VERSION: ${{ steps.v.outputs.version }}
           DMG: ${{ steps.dmg.outputs.file }}
           APP: ${{ steps.dmg.outputs.app }}
