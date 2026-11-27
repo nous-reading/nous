@@ -139,10 +139,10 @@ jobs:
           OUT="Nous-${{ steps.v.outputs.version }}-aarch64-test.${{ github.run_number }}.dmg"
           rm -rf /tmp/dmgroot && mkdir -p /tmp/dmgroot
           cp -R "$APP" /tmp/dmgroot/
-          hdiutil create -volname "$NAME" -srcfolder /tmp/dmgroot -ov -format UDBZ "$OUT"
+          hdiutil create -volname "$NAME" -srcfolder /tmp/dmgroot -ov -format UDZO "$OUT"
           shasum -a 256 "$OUT" | tee SHA256SUMS.txt
           echo "file=$OUT" >> "$GITHUB_OUTPUT"
-          echo "app=$NAME" >> "$GITHUB_OUTPUT"
+          echo "app=$(basename "$APP")" >> "$GITHUB_OUTPUT"
           du -h "$OUT"
 
       - name: 写安装说明
