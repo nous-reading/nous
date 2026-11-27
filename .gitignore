@@ -1,0 +1,11 @@
+# 发布仓库：只允许白名单文件入库，其余（含任何源码）一律忽略。
+#
+# 二进制不要提交进 git —— 走 Release 资产。
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/.github/
+!/.github/**
+!/releases/
+!/releases/**

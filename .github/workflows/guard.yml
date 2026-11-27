@@ -1,0 +1,44 @@
+# 发布仓库守卫：main 分支只允许白名单文件，防止源码或二进制误入公开仓库。
+name: guard
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  allowlist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 只允许白名单文件
+        shell: bash
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            case "$f" in
+              README.md|LICENSE|.gitignore|.github/*|releases/*) ;;
+              *) echo "::error file=$f::发布仓库不允许该文件：$f"; fail=1 ;;
+            esac
+          done < <(git ls-files)
+          if [ "$fail" -ne 0 ]; then
+            echo "源码与构建产物请留在私有仓库；二进制请走 Release 资产。"
+            exit 1
+          fi
+          echo "白名单检查通过（$(git ls-files | wc -l) 个文件）。"
+
+      - name: 拒绝超过 5 MB 的文件
+        shell: bash
+        run: |
+          big=$(find . -type f -not -path './.git/*' -size +5M || true)
+          if [ -n "$big" ]; then
+            echo "::error::仓库里不允许大文件，请改用 Release 资产"
+            echo "$big"
+            exit 1
+          fi
+          echo "体积检查通过。"
