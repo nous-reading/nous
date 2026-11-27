@@ -1,0 +1,195 @@
+# Mac 快速验证构建（公开仓库，不发布版本，只出 Artifact）
+#
+# 用法：私有仓库提交后，到 Actions → mac-dev-build → Run workflow（ref 默认 main）。
+# 产物：Artifact 里的 Nous-<版本>-aarch64-test.<run>.dmg + SHA256SUMS.txt + 安装说明.txt
+# 只读一次私有仓库的 tarball，token 不落盘；不建 tag、不建 Release。
+name: mac-dev-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "私有仓库的分支 / 提交 SHA / tag"
+        required: false
+        default: main
+      note:
+        description: "这次构建的备注（只写进 summary）"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-dev-build
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: macOS arm64 打包
+    runs-on: macos-15
+    timeout-minutes: 40
+    steps:
+      - name: 取私有仓库源码（tarball，token 不落盘）
+        env:
+          SOURCE_TOKEN: ${{ secrets.SOURCE_TOKEN }}
+          SOURCE_REF: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p src
+          ok=0
+          for i in 1 2 3; do
+            echo "[source] attempt $i (ref=${SOURCE_REF:-main})"
+            if curl -fsSL --retry 3 --retry-all-errors \
+                 -H "Authorization: Bearer ${SOURCE_TOKEN}" \
+                 -H "Accept: application/vnd.github+json" \
+                 "https://api.github.com/repos/panda-club/nous/tarball/${SOURCE_REF:-main}" \
+                 -o source.tar.gz; then ok=1; break; fi
+            sleep $((i * 5))
+          done
+          [ "$ok" = "1" ] || { echo "::error::拉取私有仓库失败"; exit 1; }
+          tar -xzf source.tar.gz -C src --strip-components=1
+          rm -f source.tar.gz
+          test -f src/package.json
+          test -f src/src-tauri/tauri.conf.json
+          echo "源码就绪：$(git -C src rev-parse HEAD 2>/dev/null || echo '无 git 元数据')"
+
+      - name: 读取版本号
+        id: v
+        run: |
+          set -euo pipefail
+          V=$(python3 -c "import json;print(json.load(open('src/src-tauri/tauri.conf.json'))['version'])")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "版本：$V"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: src/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src/src-tauri -> target
+          key: mac-dev-arm64
+          cache-on-failure: true
+
+      - name: 缓存 node_modules
+        id: nm
+        uses: actions/cache@v4
+        with:
+          path: src/node_modules
+          key: nm-${{ runner.os }}-${{ hashFiles('src/package-lock.json') }}
+
+      - name: 安装前端依赖
+        if: steps.nm.outputs.cache-hit != 'true'
+        run: cd src && npm ci --prefer-offline --no-audit --no-fund
+
+      - name: 缓存内置 Python 运行时
+        uses: actions/cache@v4
+        with:
+          path: src/src-tauri/resources/python
+          key: pyrt-${{ runner.os }}-aarch64-${{ hashFiles('src/backend/requirements.desktop.txt') }}
+
+      - name: 准备内置运行时
+        env:
+          NOUS_FRONTEND_VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd src
+          python3 scripts/desktop/prepare_runtime.py \
+            --target aarch64-apple-darwin \
+            --version "${{ steps.v.outputs.version }}" \
+            --keep-runtime
+
+      - name: 构建（未签名，关闭 updater 产物）
+        env:
+          NOUS_FRONTEND_VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd src
+          python3 - <<'PY'
+          import json, pathlib
+          base = json.loads(pathlib.Path("src-tauri/tauri.bundle.conf.json").read_text())
+          base.setdefault("bundle", {})["createUpdaterArtifacts"] = False
+          pathlib.Path("/tmp/nous-dev-build.conf.json").write_text(json.dumps(base, indent=2))
+          print(json.dumps(base))
+          PY
+          time npx tauri build \
+            --target aarch64-apple-darwin \
+            --bundles app \
+            --config /tmp/nous-dev-build.conf.json
+
+      - name: 打 DMG
+        id: dmg
+        run: |
+          set -euo pipefail
+          APP=$(find src/src-tauri/target/aarch64-apple-darwin/release/bundle/macos \
+                -maxdepth 1 -name "*.app" | head -n 1)
+          [ -n "$APP" ] || { echo "::error::没找到 .app"; find src/src-tauri/target -maxdepth 6 -name "*.app" -print; exit 1; }
+          NAME=$(basename "$APP" .app)
+          OUT="Nous-${{ steps.v.outputs.version }}-aarch64-test.${{ github.run_number }}.dmg"
+          rm -rf /tmp/dmgroot && mkdir -p /tmp/dmgroot
+          cp -R "$APP" /tmp/dmgroot/
+          hdiutil create -volname "$NAME" -srcfolder /tmp/dmgroot -ov -format UDBZ "$OUT"
+          shasum -a 256 "$OUT" | tee SHA256SUMS.txt
+          echo "file=$OUT" >> "$GITHUB_OUTPUT"
+          echo "app=$NAME" >> "$GITHUB_OUTPUT"
+          du -h "$OUT"
+
+      - name: 写安装说明
+        run: |
+          cat > 安装说明.txt <<TXT
+          如是 Nous · 测试包（未签名，仅供内测）
+
+          版本：${{ steps.v.outputs.version }}
+          构建：#${{ github.run_number }}（${{ github.run_id }}）
+          时间：$(date -u '+%Y-%m-%d %H:%M UTC')
+          架构：Apple Silicon（arm64）——Intel Mac 不能安装
+          系统：macOS 11.0 及以上
+
+          【安装】
+          1. 双击 DMG，把「${{ steps.dmg.outputs.app }}」拖进「应用程序」
+          2. 首次打开会被 Gatekeeper 拦（提示「已损坏，无法打开」），执行一次：
+                 sudo xattr -rd com.apple.quarantine "/Applications/${{ steps.dmg.outputs.app }}"
+          3. 再双击打开即可
+
+          这个包没有签名和公证，所以必须做第 2 步；每次重新下载安装都要再做一次。
+
+          SHA256：
+          $(cat SHA256SUMS.txt)
+          TXT
+          cat 安装说明.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nous-mac-${{ steps.v.outputs.version }}-run${{ github.run_number }}
+          path: |
+            ${{ steps.dmg.outputs.file }}
+            SHA256SUMS.txt
+            安装说明.txt
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: 汇总
+        if: always()
+        run: |
+          {
+            echo "## macOS 测试包"
+            echo ""
+            echo "- 版本：\`${{ steps.v.outputs.version }}\`"
+            echo "- 源码 ref：\`${{ inputs.ref }}\`"
+            echo "- 产物：\`${{ steps.dmg.outputs.file }}\`"
+            echo "- Artifact：\`nous-mac-${{ steps.v.outputs.version }}-run${{ github.run_number }}\`（保留 14 天）"
+            echo "- 备注：${{ inputs.note }}"
+            echo ""
+            echo "> 未签名，安装后需执行一次 \`sudo xattr -rd com.apple.quarantine\`。"
+          } >> "$GITHUB_STEP_SUMMARY"
